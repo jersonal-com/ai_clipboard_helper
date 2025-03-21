@@ -15,6 +15,8 @@ the content of that file and add it to the clipboard.
 
 ## Usage
 
+![screenshot_ai_helper.png](screenshot_ai_helper.png)
+
 * Open the app and select a root folder where your files are located.
 * Then start the monitoring by clicking the start button.
 * Copy Codeium text containing @filename references.
