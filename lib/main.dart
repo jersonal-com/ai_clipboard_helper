@@ -42,6 +42,13 @@ class _MyHomePageState extends State<MyHomePage> {
 
   static const String _rootFolderKey = 'root_folder';
 
+  // Map from filename to list of all matching relative paths
+  Map<String, List<String>> _duplicateFilePaths = {};
+  // Map from filename to set of selected relative paths
+  Map<String, Set<String>> _selectedFilePaths = {};
+  // Map from filename to last found matches (for chips UI)
+  Map<String, List<String>> _lastFileMatches = {};
+
   @override
   void initState() {
     super.initState();
@@ -141,31 +148,21 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _checkClipboard() async {
     final clipboardContent = await FlutterClipboard.paste();
-
-    // Update preview regardless of content change
     if (_clipboardPreview != clipboardContent) {
       setState(() {
         _clipboardPreview = clipboardContent;
       });
     }
-
-    // Skip if content is empty or matches our last modified content
-    if (clipboardContent.isEmpty || clipboardContent == _lastModifiedContent) {
-      return;
-    }
-
-    // Skip if content is the same as last check
-    if (clipboardContent == _lastClipboardContent) {
-      return;
-    }
-
+    if (clipboardContent.isEmpty || clipboardContent == _lastModifiedContent) return;
+    if (clipboardContent == _lastClipboardContent) return;
     _lastClipboardContent = clipboardContent;
-
-    // Find all @xxxx patterns
     final regex = RegExp(r'@([^\s]+)');
     final matches = regex.allMatches(clipboardContent);
-
     if (matches.isEmpty) return;
+
+    _duplicateFilePaths.clear();
+    _lastFileMatches.clear();
+    _selectedFilePaths.clear();
 
     String modifiedContent = clipboardContent;
     bool anyFileFound = false;
@@ -173,29 +170,38 @@ class _MyHomePageState extends State<MyHomePage> {
     for (final match in matches) {
       final fileName = match.group(1);
       if (fileName != null) {
-        final fileInfo = await _findAndReadFile(fileName);
-        if (fileInfo != null) {
+        final fileInfos = await _findAndReadAllFiles(fileName);
+        if (fileInfos.isNotEmpty) {
           anyFileFound = true;
-          final (content, relativePath) = fileInfo;
+          // Save for chips UI
+          _lastFileMatches[fileName] = fileInfos.map((e) => e.$2).toList();
+          if (fileInfos.length > 1) {
+            _duplicateFilePaths[fileName] = fileInfos.map((e) => e.$2).toList();
+            // Select first by default
+            _selectedFilePaths[fileName] = {fileInfos.first.$2};
+          } else {
+            _selectedFilePaths[fileName] = {fileInfos.first.$2};
+          }
+        }
+      }
+    }
 
-          // Determine language from file extension
+    // Compose preview from selected files
+    for (final fileName in _selectedFilePaths.keys) {
+      final selectedPaths = _selectedFilePaths[fileName]!;
+      final fileInfos = await _findAndReadAllFiles(fileName);
+      for (final (content, relativePath) in fileInfos) {
+        if (selectedPaths.contains(relativePath)) {
           final extension = path.extension(fileName).replaceAll('.', '');
           final language = extension.isNotEmpty ? extension : 'text';
-
-          // Append markdown code block with relative path
           modifiedContent += '\n\n**File: $relativePath**\n```$language\n$content\n```';
         }
       }
     }
 
     if (anyFileFound) {
-      // Cache our modified content before updating clipboard
       _lastModifiedContent = modifiedContent;
-
-      // Update clipboard with new content
       await FlutterClipboard.copy(modifiedContent);
-
-      // Update preview and show modification indicator
       setState(() {
         _clipboardPreview = modifiedContent;
       });
@@ -203,18 +209,9 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  Future<(String, String)?> _findAndReadFile(String fileName) async {
-    if (rootFolder == null) return null;
-
-    // First try direct match
-    final directFile = File(path.join(rootFolder!, fileName));
-    if (await directFile.exists()) {
-      final content = await directFile.readAsString();
-      final relativePath = path.relative(directFile.path, from: rootFolder!);
-      return (content, relativePath);
-    }
-
-    // Otherwise, search recursively
+  Future<List<(String, String)>> _findAndReadAllFiles(String fileName) async {
+    List<(String, String)> result = [];
+    if (rootFolder == null) return result;
     final directory = Directory(rootFolder!);
     try {
       final entities = await directory.list(recursive: true).toList();
@@ -222,14 +219,53 @@ class _MyHomePageState extends State<MyHomePage> {
         if (entity is File && path.basename(entity.path) == fileName) {
           final content = await entity.readAsString();
           final relativePath = path.relative(entity.path, from: rootFolder!);
-          return (content, relativePath);
+          result.add((content, relativePath));
         }
       }
     } catch (e) {
       print('Error searching for file: $e');
     }
+    return result;
+  }
 
-    return null;
+  void _onChipTapped(String fileName, String relativePath) async {
+    setState(() {
+      final selected = _selectedFilePaths[fileName] ?? <String>{};
+      if (selected.contains(relativePath)) {
+        selected.remove(relativePath);
+      } else {
+        selected.add(relativePath);
+      }
+      // If none selected, reselect first
+      if (selected.isEmpty && _duplicateFilePaths[fileName]?.isNotEmpty == true) {
+        selected.add(_duplicateFilePaths[fileName]!.first);
+      }
+      _selectedFilePaths[fileName] = selected;
+    });
+    // Rebuild clipboard preview with new selection
+    await _rebuildClipboardPreview();
+  }
+
+  Future<void> _rebuildClipboardPreview() async {
+    final clipboardContent = await FlutterClipboard.paste();
+    String modifiedContent = clipboardContent;
+    for (final fileName in _selectedFilePaths.keys) {
+      final selectedPaths = _selectedFilePaths[fileName]!;
+      final fileInfos = await _findAndReadAllFiles(fileName);
+      for (final (content, relativePath) in fileInfos) {
+        if (selectedPaths.contains(relativePath)) {
+          final extension = path.extension(fileName).replaceAll('.', '');
+          final language = extension.isNotEmpty ? extension : 'text';
+          modifiedContent += '\n\n**File: $relativePath**\n```$language\n$content\n```';
+        }
+      }
+    }
+    _lastModifiedContent = modifiedContent;
+    await FlutterClipboard.copy(modifiedContent);
+    setState(() {
+      _clipboardPreview = modifiedContent;
+    });
+    _showModificationIndicator();
   }
 
   @override
@@ -309,7 +345,35 @@ class _MyHomePageState extends State<MyHomePage> {
               'Clipboard Preview:',
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            const SizedBox(height: 8),
+            if (_duplicateFilePaths.isNotEmpty)
+              ..._duplicateFilePaths.entries.map((entry) {
+                final fileName = entry.key;
+                final paths = entry.value;
+                final selected = _selectedFilePaths[fileName] ?? <String>{};
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Multiple files found for @$fileName:'),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: paths.map((relativePath) {
+                          final isSelected = selected.contains(relativePath);
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                            child: ChoiceChip(
+                              label: Text(relativePath),
+                              selected: isSelected,
+                              onSelected: (_) => _onChipTapped(fileName, relativePath),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                );
+              }),
             Expanded(
               child: Container(
                 width: double.infinity,
