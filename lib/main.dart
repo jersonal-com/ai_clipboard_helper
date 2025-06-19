@@ -156,7 +156,7 @@ class _MyHomePageState extends State<MyHomePage> {
     if (clipboardContent.isEmpty || clipboardContent == _lastModifiedContent) return;
     if (clipboardContent == _lastClipboardContent) return;
     _lastClipboardContent = clipboardContent;
-    final regex = RegExp(r'@([^\s]+)');
+    final regex = RegExp(r'@([^\s`]+)');
     final matches = regex.allMatches(clipboardContent);
     if (matches.isEmpty) return;
 
@@ -168,8 +168,11 @@ class _MyHomePageState extends State<MyHomePage> {
     bool anyFileFound = false;
 
     for (final match in matches) {
-      final fileName = match.group(1);
+      String? fileName = match.group(1);
       if (fileName != null) {
+        if (fileName.startsWith('file:')) {
+          fileName = fileName.substring(5);
+        }
         final fileInfos = await _findAndReadAllFiles(fileName);
         if (fileInfos.isNotEmpty) {
           anyFileFound = true;
